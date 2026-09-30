@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Study Buddy</title>
+<style>
+  :root { --bg:#f5f6fa; --card:#fff; --ink:#1f2430; --mut:#6b7280; --pri:#4f46e5; --ok:#16a34a; --bad:#dc2626; --line:#e5e7eb; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#12141a; --card:#1c1f28; --ink:#e8eaf0; --mut:#9aa1b0; --line:#2b3040; } }
+  * { box-sizing:border-box } body { margin:0; font-family:system-ui,sans-serif; background:var(--bg); color:var(--ink); }
+  main { max-width:820px; margin:0 auto; padding:16px; }
+  h1 { margin:8px 0 12px } nav { display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap }
+  nav button { background:var(--card); color:var(--ink); border:1px solid var(--line); padding:8px 14px; border-radius:8px; cursor:pointer }
+  nav button.on { background:var(--pri); color:#fff; border-color:var(--pri) }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:12px }
+  input, textarea, select { width:100%; padding:9px; margin:4px 0 10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); font:inherit }
+  textarea { min-height:100px } .row { display:flex; gap:8px } .row > * { flex:1 }
+  button.act { background:var(--pri); color:#fff; border:0; padding:9px 16px; border-radius:8px; cursor:pointer; font:inherit }
+  button.ghost { background:none; color:var(--bad); border:1px solid var(--line); padding:6px 10px; border-radius:8px; cursor:pointer }
+  .mut { color:var(--mut); font-size:.9em } .bar { height:8px; background:var(--line); border-radius:4px; overflow:hidden; margin-top:6px }
+  .bar > div { height:100%; background:var(--pri) } .stats { display:grid; grid-template-columns:repeat(3,1fr); gap:10px }
+  .stat { text-align:center } .stat b { font-size:1.8em; display:block }
+  .opt { display:block; padding:8px 10px; border:1px solid var(--line); border-radius:8px; margin:6px 0; cursor:pointer }
+  .opt:has(input:checked) { border-color:var(--pri); background:rgba(79,70,229,.1) } .opt input { width:auto; margin:0 8px 0 0 }
+  .wrong { border-left:4px solid var(--bad); padding-left:10px; margin:10px 0 } .hide { display:none } .err { color:var(--bad) }
+</style>
+</head>
+<body>
+<main>
+  <h1>📚 Study Buddy</h1>
+  <nav id="nav"></nav>
+  <div id="view"></div>
+</main>
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const h = (tag, attrs = {}, ...kids) => {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) k.startsWith('on') ? el.addEventListener(k.slice(2), v) : el[k] = v;
+  kids.flat().forEach(k => el.append(k instanceof Node ? k : document.createTextNode(k ?? '')));
+  return el;
+};
+const api = async (url, method = 'GET', body) => {
+  const r = await fetch('/api' + url, { method, headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || 'Request failed');
+  return data;
+};
+const bar = pct => h('div', { className: 'bar' }, h('div', { style: `width:${pct}%` }));
+const tabs = { Topics: topicsView, 'Log study': logView, 'Take a quiz': quizView, Progress: progressView };
+let current = 'Topics';
+
+function renderNav() {
+  const nav = $('#nav'); nav.replaceChildren();
+  Object.keys(tabs).forEach(name => nav.append(h('button', { className: name === current ? 'on' : '', onclick: () => go(name) }, name)));
+}
+async function go(name) {
+  current = name; renderNav();
+  const view = $('#view'); view.replaceChildren(h('p', { className: 'mut' }, 'Loading...'));
+  try { view.replaceChildren(await tabs[name]()); } catch (e) { view.replaceChildren(h('p', { className: 'err' }, e.message)); }
+}
+
+async function topicsView() {
+  const topics = await api('/topics');
+  const subject = h('input', { placeholder: 'Subject (e.g. Biology)' });
+  const title = h('input', { placeholder: 'Topic (e.g. Photosynthesis)' });
+  const notes = h('textarea', { placeholder: 'Paste your notes here. Full sentences make better quizzes.' });
+  const err = h('div', { className: 'err' });
+  const form = h('div', { className: 'card' }, h('h3', {}, 'Add a topic'), subject, title, notes,
+    h('button', { className: 'act', onclick: async () => {
+      try { await api('/topics', 'POST', { subject: subject.value, title: title.value, notes: notes.value }); go('Topics'); }
+      catch (e) { err.textContent = e.message; }
+    } }, 'Save topic'), err);
+  const list = topics.map(t => h('div', { className: 'card' },
+    h('b', {}, t.title), h('span', { className: 'mut' }, ` · ${t.subject}`),
+    h('div', { className: 'mut' }, `${t.minutesStudied} min studied · mastery ${t.attempts ? t.mastery + '%' : 'not tested yet'}`),
+    bar(t.mastery),
+    h('p', {}, h('button', { className: 'ghost', onclick: async () => { if (confirm('Delete this topic and its history?')) { await api('/topics/' + t._id, 'DELETE'); go('Topics'); } } }, 'Delete'))));
+  return h('div', {}, form, ...list);
+}
+
+async function logView() {
+  const [topics, sessions] = await Promise.all([api('/topics'), api('/sessions')]);
+  if (!topics.length) return h('p', {}, 'Add a topic first.');
+  const sel = h('select', {}, topics.map(t => h('option', { value: t._id }, `${t.subject}: ${t.title}`)));
+  const mins = h('input', { type: 'number', min: 1, placeholder: 'Minutes studied' });
+  const note = h('input', { placeholder: 'What did you cover? (optional)' });
+  const err = h('div', { className: 'err' });
+  const form = h('div', { className: 'card' }, h('h3', {}, 'Log a study session'), sel, mins, note,
+    h('button', { className: 'act', onclick: async () => {
+      try { await api('/sessions', 'POST', { topicId: sel.value, minutes: mins.value, note: note.value }); go('Log study'); }
+      catch (e) { err.textContent = e.message; }
+    } }, 'Log it'), err);
+  const list = sessions.map(s => h('div', { className: 'card' }, h('b', {}, s.topic?.title || '(deleted topic)'),
+    ` · ${s.minutes} min`, h('div', { className: 'mut' }, new Date(s.date).toLocaleString() + (s.note ? ' · ' + s.note : ''))));
+  return h('div', {}, form, ...list);
+}
+
+async function quizView() {
+  const topics = await api('/topics');
+  if (!topics.length) return h('p', {}, 'Add a topic first.');
+  const sel = h('select', {}, topics.map(t => h('option', { value: t._id }, `${t.subject}: ${t.title}`)));
+  const count = h('input', { type: 'number', min: 1, max: 15, value: 5 });
+  const out = h('div', {}); const err = h('div', { className: 'err' });
+  const start = h('button', { className: 'act', onclick: async () => {
+    err.textContent = ''; start.disabled = true; start.textContent = 'Generating...';
+    try { renderQuiz(out, await api(`/topics/${sel.value}/quiz`, 'POST', { count: count.value })); }
+    catch (e) { err.textContent = e.message; }
+    start.disabled = false; start.textContent = 'Generate quiz';
+  } }, 'Generate quiz');
+  return h('div', {}, h('div', { className: 'card' }, h('h3', {}, 'Test yourself'), sel, h('label', { className: 'mut' }, 'Number of questions'), count, start, err), out);
+}
+
+function renderQuiz(out, quiz) {
+  const picked = [];
+  const qs = quiz.questions.map((q, i) => h('div', { className: 'card' }, h('b', {}, `${i + 1}. ${q.q}`),
+    ...q.options.map((o, j) => h('label', { className: 'opt' },
+      h('input', { type: 'radio', name: 'q' + i, onchange: () => picked[i] = j }), o))));
+  const result = h('div', {});
+  const submit = h('button', { className: 'act', onclick: async () => {
+    const r = await api(`/quizzes/${quiz._id}/submit`, 'POST', { answers: Array.from(picked, x => x ?? -1) });
+    submit.classList.add('hide');
+    result.replaceChildren(h('div', { className: 'card' }, h('h2', {}, `Score: ${r.score}/${r.total} (${r.percent}%)`),
+      h('div', { className: 'mut' }, `Topic mastery now ${r.mastery}%`),
+      r.wrong.length ? h('h4', {}, 'Review these:') : h('p', {}, '🎉 Perfect score!'),
+      ...r.wrong.map(w => h('div', { className: 'wrong' }, h('b', {}, w.q), h('div', {}, `You: ${w.chosen}`),
+        h('div', { style: 'color:var(--ok)' }, `Correct: ${w.correct}`), h('div', { className: 'mut' }, w.explanation || '')))));
+    result.scrollIntoView({ behavior: 'smooth' });
+  } }, 'Submit answers');
+  out.replaceChildren(h('p', { className: 'mut' }, quiz.source === 'ai' ? 'Written by Gemini' : 'Basic fill-in-the-blank mode (add GEMINI_API_KEY for AI quizzes)'), ...qs, submit, result);
+}
+
+async function progressView() {
+  const s = await api('/stats');
+  const stat = (n, l) => h('div', { className: 'card stat' }, h('b', {}, n), h('span', { className: 'mut' }, l));
+  const list = (title, items) => h('div', { className: 'card' }, h('h3', {}, title),
+    items.length ? items.map(i => h('div', {}, `${i.title}: ${i.mastery}%`, bar(i.mastery))) : h('span', { className: 'mut' }, 'Take a quiz to see this.'));
+  return h('div', {}, h('div', { className: 'stats' }, stat(s.totalMinutes, 'minutes studied'), stat(s.streak + ' 🔥', 'day streak'), stat(s.quizzesTaken, 'quizzes taken')),
+    list('Needs more work', s.weakest), list('Strongest topics', s.strongest),
+    h('div', { className: 'card' }, h('h3', {}, 'Recent quizzes'),
+      s.recentAttempts.length ? s.recentAttempts.map(a => h('div', { className: 'mut' }, `${a.topic || '(deleted)'}: ${a.score}/${a.total} · ${new Date(a.date).toLocaleDateString()}`)) : 'No quizzes yet.'));
+}
+go('Topics');
+</script>
+</body>
+</html>
